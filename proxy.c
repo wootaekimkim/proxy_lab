@@ -15,7 +15,7 @@
 
 #define log(func) fprintf(stderr, #func" error: %s\n%s%s:%d%s\n", \
         strerror(errno), \
-        status.scm, \
+        status.prot, \
         status.hostname, \
         status.port, \
         status.path)
@@ -24,12 +24,12 @@
 
 extern sem_t sem_log;   // Semaphore variables
 extern sem_t sem_dns;   // Semaphore variables
-FILE* log_file;
+FILE* log_file;         // File pointer for log file
 
 struct status_line {
     char line[MAXLINE];
     char method[20];
-    char scm[20];
+    char prot[20];
     char hostname[MAXLINE];
     int  port;
     char path[MAXLINE];
@@ -91,7 +91,7 @@ int main(int argc, char* argv[]) {
     struct sockaddr_in clientaddr;  // Socket Information in this
     socklen_t addrlen = sizeof clientaddr;
 
-    while ("serve forever") {   // Continuously receive
+    while ("serve forever") {   // Continuously receive, equivalent to while(1)
 
 
         printf("listening..\n");
@@ -114,10 +114,10 @@ int main(int argc, char* argv[]) {
 int parseline(char* line, struct status_line* status) {
     status->port = 80;
     strcpy(status->line, line);
-
+// line example : "POST http://example.com/example HTTP/1.1"  //
     if (sscanf(line, "%s %[a-z]://%[^/]%s %s",
         status->method,
-        status->scm,
+        status->prot,
         status->hostname,
         status->path,
         status->version) != 5) {
@@ -126,21 +126,21 @@ int parseline(char* line, struct status_line* status) {
             status->hostname,
             status->version) != 3)
             return -1;
-        *status->scm = *status->path = 0;
+        *status->prot = *status->path = 0;
     }
     else
-        strcat(status->scm, "://");
+        strcat(status->prot, "://");
 
-    char* pos = strchr(status->hostname, ':');
+    char* pos = strchr(status->hostname, ':');  // If there is port number in hostname
     if (pos) {
         *pos = 0;
-        status->port = atoi(pos + 1);   // Put in which port to use
+        status->port = atoi(pos + 1);   // Which port to use
     }
     return 0;
 }
 
 
-//   send request to server by buffer from client     // 
+//   Send request to server by buffer from client     // 
 
 int send_request(rio_t* rio, char* buf,
     struct status_line* status, int serverfd, int clientfd) {
@@ -150,16 +150,17 @@ int send_request(rio_t* rio, char* buf,
             "Connection: close\r\n",
             status->method,
             *status->path ? status->path : "/",
-            status->version);//buf 에 Connection: close <method> <path> 를 저장
-        if ((len = rio_writen(serverfd, buf, len)) < 0) // serverfd 에 buf 내용을 저장
+            status->version);   // "Connection: close <method> <path> <version>" goes into buf
+                                // If there is no path,  '/' goes instead.
+        if ((len = rio_writen(serverfd, buf, len)) < 0)
             return len;
         while (len != 2) {
-            if ((len = rio_readlineb(rio, buf, MAXLINE)) < 0) //buf 에 rio 에 해당하는 내용을 저장
+            if ((len = rio_readlineb(rio, buf, MAXLINE)) < 0) // Send rio's content into buf
                 return len;
             if (memcmp(buf, "Proxy-Connection: ", 18) == 0 ||
                 memcmp(buf, "Connection: ", 12) == 0)
                 continue;
-            if ((len = rio_writen(serverfd, buf, len)) < 0)
+            if ((len = rio_writen(serverfd, buf, len)) < 0) // Send buf's content into serverfd
                 return len;
         }
         if (rio->rio_cnt &&
@@ -205,7 +206,7 @@ int transmit(int readfd, int writefd, char* buf, int* count
 }
 
 
-//    wrapper function for transmit function          // 
+//  Wrapper function for transmit function    // 
 
 int interrelate(int serverfd, int clientfd, char* buf, int idling
 
@@ -215,6 +216,8 @@ int interrelate(int serverfd, int clientfd, char* buf, int idling
     int count = 0;
     int nfds = (serverfd > clientfd ? serverfd : clientfd) + 1;
     int flag;
+//  fd_set, FD_() functions are used to deal with fd efficiently and to use select() //
+//  rlist is for read, xlist is for exception.  //
     fd_set rlist, xlist;
     FD_ZERO(&rlist);
     FD_ZERO(&xlist);
@@ -225,13 +228,14 @@ int interrelate(int serverfd, int clientfd, char* buf, int idling
 
     while (1) {
         count++;
-
+//  Initialize fd   //
         FD_SET(clientfd, &rlist);
         FD_SET(serverfd, &rlist);
         FD_SET(clientfd, &xlist);
         FD_SET(serverfd, &xlist);
 
         struct timeval timeout = { 2L, 0L };
+//  select() for efficient multiplexing    //
         if ((flag = select(nfds, &rlist, NULL, &xlist, &timeout)) < 0)
             return flag;
         if (flag) {
@@ -270,21 +274,23 @@ int interrelate(int serverfd, int clientfd, char* buf, int idling
 //  Wrapping send_request(), interrelate() functions  //
 
 void* proxy(void* vargs) {
-    Pthread_detach(Pthread_self());
+    Pthread_detach(Pthread_self());     // Thread is detached
 
     int serverfd;
+//  Recognize the client by clientfd    //
     int clientfd = *(int*)vargs;
-
+//  "argsp" from main function is put in "args" in proxy()  //
     struct thread_args* args = (struct thread_args*)vargs;
-    int fd = args->fd;
+    int fd = args->fd;  // Copy accepted fd of argsp (= connfd) into fd
     struct sockaddr_in sock;
-    memcpy(&sock, &(args->sock), sizeof(struct sockaddr_in));
+    memcpy(&sock, &(args->sock), sizeof(struct sockaddr_in));   // Copy socket address of argsp into sock
+// Copied all data into local variables args is ready to be free    //
     free(args);
 
     rio_t rio;
-    rio_readinitb(&rio, clientfd);
+    rio_readinitb(&rio, clientfd);  // Read from clientfd
 
-    struct status_line status;
+    struct status_line status;  // Data read from clientfd will be put in status
 
     char buf[MAXLINE];
     int flag;
@@ -297,29 +303,28 @@ void* proxy(void* vargs) {
     int contents_len = 0;
 
 
-    if ((flag = rio_readlineb(&rio, buf, MAXLINE)) > 0) {
+    if ((flag = rio_readlineb(&rio, buf, MAXLINE)) > 0) // Reading data and error handling
+    {
 
-        sscanf(buf, "%s %s %s", method_dummy, uri, version_dummy);
-
-
+        sscanf(buf, "%s %s %s", method_dummy, uri, version_dummy);  // Read and separate data from buf
 
         if (parseline(buf, &status) < 0)
-            fprintf(stderr, "parseline error: '%s'\n", buf);
+            fprintf(stderr, "parseline error: '%s'\n", buf);    // Error handling when failed to parse
 
         else if ((serverfd =
-            open_clientfd(status.hostname, status.port)) < 0)
-            log(open_clientfd);
+            open_clientfd(status.hostname, status.port)) < 0)   // Try to connect to server by hostname and port
+            log(open_clientfd); // Error handling when failed to get client fd
         else {
 
             if ((flag = send_request(&rio, buf,
                 &status, serverfd, clientfd)) < 0)
-                log(send_request);
+                log(send_request);  // Error handling when failed to send request
             else if (interrelate(serverfd, clientfd, buf, flag
 
                 , objectbuf, &status
 
             ) < 0)
-                log(interrelate);
+                log(interrelate);   // Error handling when failed interrelate
 
 
             close(serverfd);
